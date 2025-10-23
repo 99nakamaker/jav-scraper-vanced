@@ -1,3 +1,49 @@
+[project]
+name = "javsp"
+description = "汇总多站点数据的AV元数据刮削器"
+authors = [
+    {name = "Yuukiy", email = "76897913+Yuukiy@users.noreply.github.com"},
+]
+license = {text = "GPL-3.0-only"}
+readme = "README.md"
+requires-python = "<3.13,>=3.10"
+dependencies = [
+    "cloudscraper==1.2.71",
+    "colorama==0.4.4",
+    "pillow==10.2.0",
+    "pretty-errors==1.2.19",
+    "requests==2.31.0",
+    "tqdm==4.59.0",
+    "pywin32>=306; sys_platform == 'win32'",
+    "pywin32-ctypes>=0.2.2; sys_platform == 'win32'",
+    "cryptography>=42.0.5",
+    "pycryptodome>=3.20.0",
+    "lxml[html-clean]>=5.2.1",
+    "confz>=2.0.1",
+    "pydantic-extra-types>=2.9.0",
+    "pendulum>=3.0.0",
+    "slimeface>=2024.9.27",
+    "packaging>=25.0",
+]
+dynamic = ["version"]
+
+[project.scripts]
+javsp = "javsp.__main__:entry"
+server = "javsp.server:entry"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.1.1",
+    "flake8>=7.0.0",
+    "cx-freeze>=7.2.2",
+    "types-lxml>=2024.4.14",
+    "types-pillow>=10.2.0.20240822",
+]
+
+[[tool.uv.index]]
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true
+
 [tool.poetry]
 name = "javsp"
 version = "0.0.0"
