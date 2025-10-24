@@ -19,8 +19,10 @@ scanner:
   # 匹配番号时忽略小于指定大小的文件
   # 格式要求：https://docs.pydantic.dev/2.0/usage/types/bytesize/
   minimum_size: 2MiB
-  skip_nfo_dir: yes
+  skip_nfo_dir: no
   manual: yes
+  # 是否自动确认番号（true: 自动确认，不提示用户；false: 手动确认每个番号）
+  auto_confirm: true
 ################################
 network:
   # 设置代理服务器地址，支持 http, socks5/socks5h 代理，比如'http://127.0.0.1:1080'
@@ -143,17 +145,15 @@ summarizer:
 
   extra_fanarts:
     # 是否下载剧照？
-    enabled: false
+    enabled: true
     # 间隔的两次封面爬取请求之间应该间隔多久
     scrap_interval: PT1.5S
 
 ################################
 translator:
-  # ============================================
-  # 新配置方式：使用 providers 列表（推荐）
-  # ============================================
   # 配置多个 OpenAI 兼容的翻译服务，按优先级顺序尝试
-  # 支持 OpenAI、Gemini (通过 OpenAI SDK)、以及其他兼容服务
+  # 支持 OpenAI、Gemini (through OpenAI SDK)、以及其他兼容服务
+  # 所有 providers 失败后自动回退到 Google 翻译
   #
   # 重要：API Key 应该存储在 .env 文件中，不要直接写在这里！
   # 1. 复制 .env.example 到 .env
@@ -165,50 +165,11 @@ translator:
       api_key: '${MODELSCOPE_API_KEY}'  # 从 .env 文件读取
       model: 'LLM-Research/Llama-4-Scout-17B-16E-Instruct'
       name: 'ModelScope'
-    # 第二优先级：Gemini Pro 2.5 (通过 OpenAI SDK)
+    # 第二优先级：Gemini Pro 2.5 (through OpenAI SDK)
     - base_url: 'https://generativelanguage.googleapis.com/v1beta/openai/'
       api_key: '${GEMINI_API_KEY}'  # 从 .env 文件读取
       model: 'gemini-2.5-flash'
       name: 'Gemini'
-
-  # ============================================
-  # 旧配置方式：单个引擎（已弃用，但仍支持）
-  # ============================================
-  # 如果 providers 为空，将使用此配置
-  # 翻译引擎，可选: google, bing, baidu, claude(haiku), openai
-  engine: null
-  ## 使用百度翻译: {{{
-  # engine: 
-  #   name: baidu
-  #   # 百度翻译的APP ID和密钥
-  #   app_id: ''
-  #   api_key: ''
-  ## }}}
-  ## 使用必应翻译: {{{
-  # engine: 
-  #   name: bing
-  #   # 微软必应翻译（Azure 认知服务 → 翻译）的密钥
-  #   api_key: ''
-  ## }}}
-  ## 使用Claude翻译: {{{
-  # engine: 
-  #   name: claude
-  #   # Claude的密钥 (使用haiku模型)
-  #   api_key: ''
-  ## }}}
-  ## 使用Google翻译: {{{
-  # engine:
-  #   name: google
-  ## }}}
-  ## 使用OpenAI翻译: {{{
-  # engine: 
-  #   name: openai
-  #   # OpenAI API（默认使用 Groq，可替换成任何兼容 OpenAI 的第三方 API）
-  #   url: 'https://api.groq.com/openai/v1/chat/completions'
-  #   api_key: ''
-  #   # 要使用的模型（默认使用 Groq 的 llama-3.1-70b-versatile 模型，若使用 OpenAI 官方 API 的话一般模型为 gpt-3.5-turbo）
-  #   model: llama-3.1-70b-versatile
-  ## }}}
   
   # 是否翻译各个字段
   fields: 

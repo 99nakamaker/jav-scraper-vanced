@@ -53,18 +53,24 @@ def get_scan_dir(cfg_scan_dir: Path | None) -> str | None:
     """综合命令参数、配置文件等信息，返回要扫描影片的文件夹"""
     # 目前config模块负责处理来自命令行和来自文件的配置，cfg_scan_dir已经是综合了这两处后得到的结果
     if cfg_scan_dir:
+        logger.debug(f"配置的扫描目录: '{cfg_scan_dir}'")
         if cfg_scan_dir.exists():
+            logger.info(f"使用配置的扫描目录: '{cfg_scan_dir}'")
             return str(cfg_scan_dir)
         else:
-            logger.error(f"配置的待整理文件夹无效：'{cfg_scan_dir}'")
+            logger.error(f"配置的待整理文件夹无效：'{cfg_scan_dir}' (目录不存在)")
+            # Fall through to prompt
     else:
-        if platform.system().lower() == 'windows':
-            print('请选择要整理的文件夹：', end='')
-            root = select_folder()
-        else:
-            root = prompt('请选择要整理的文件夹路径，必须是绝对路径: ', "要整理的文件夹")
-        print(root)
-        return root
+        logger.debug("未配置扫描目录，将提示用户输入")
+
+    # Prompt user for directory
+    if platform.system().lower() == 'windows':
+        print('请选择要整理的文件夹：', end='')
+        root = select_folder()
+    else:
+        root = prompt('请选择要整理的文件夹路径，必须是绝对路径: ', "要整理的文件夹").strip()
+    print(root)
+    return root
 
 
 def remove_trail_actor_in_title(title:str, actors:list) -> str:
@@ -115,6 +121,50 @@ def get_actual_width(mix_str: str) -> int:
         if u'\u4e00' <= c <= u'\u9fa5':
             width += 1
     return width
+
+
+def is_chinese(text: str) -> bool:
+    """
+    检测文本是否主要是中文
+    Returns True if more than 30% of characters are Chinese characters
+    """
+    if not text or len(text.strip()) == 0:
+        return False
+
+    chinese_count = 0
+    total_chars = 0
+
+    for c in text:
+        # Skip whitespace and punctuation
+        if c.isspace() or c in _punc:
+            continue
+        total_chars += 1
+        # Check if character is in CJK Unified Ideographs range (common Chinese characters)
+        if u'\u4e00' <= c <= u'\u9fa5':
+            chinese_count += 1
+
+    if total_chars == 0:
+        return False
+
+    # If more than 30% of non-punctuation characters are Chinese, consider it Chinese text
+    return (chinese_count / total_chars) > 0.3
+
+
+def is_japanese(text: str) -> bool:
+    """
+    检测文本是否包含日文字符（平假名或片假名）
+    Returns True if text contains Hiragana or Katakana characters
+    """
+    if not text:
+        return False
+
+    for c in text:
+        # Hiragana: U+3040 to U+309F
+        # Katakana: U+30A0 to U+30FF
+        if (u'\u3040' <= c <= u'\u309f') or (u'\u30a0' <= c <= u'\u30ff'):
+            return True
+
+    return False
 
 
 def align_center(mix_str: str, total_width: int) -> str:

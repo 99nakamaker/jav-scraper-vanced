@@ -2,12 +2,62 @@ from argparse import ArgumentParser, RawTextHelpFormatter
 from enum import Enum
 from typing import Dict, List, Literal, TypeAlias, Union
 from confz import BaseConfig, CLArgSource, EnvSource, FileSource
-from pydantic import ByteSize, Field, NonNegativeInt, PositiveInt
+from pydantic import ByteSize, Field, NonNegativeInt, PositiveInt, field_validator
 from pydantic_extra_types.pendulum_dt import Duration
 from pydantic_core import Url
 from pathlib import Path
+import os
+import re
 
 from javsp.lib import resource_path
+
+
+def substitute_env_vars(content: str) -> str:
+    """
+    替换配置文件中的环境变量引用 ${VAR_NAME}
+
+    Args:
+        content: YAML 文件内容
+
+    Returns:
+        替换后的内容
+    """
+    def replace_var(match):
+        var_name = match.group(1)
+        # 从环境变量中获取值，如果不存在则保持原样
+        return os.environ.get(var_name, match.group(0))
+
+    # 匹配 ${VAR_NAME} 格式
+    pattern = r'\$\{([A-Z_][A-Z0-9_]*)\}'
+    return re.sub(pattern, replace_var, content)
+
+
+def create_env_substituted_config(config_file: str) -> str:
+    """
+    创建一个临时配置文件，其中的环境变量已被替换
+
+    Args:
+        config_file: 原始配置文件路径
+
+    Returns:
+        临时配置文件路径
+    """
+    import tempfile
+
+    # 读取原始文件内容
+    with open(config_file, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    # 替换环境变量
+    content = substitute_env_vars(content)
+
+    # 写入临时文件
+    tmp = tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', suffix='.yml', delete=False)
+    tmp.write(content)
+    tmp.close()
+
+    return tmp.name
+
 
 class Scanner(BaseConfig):
     ignored_id_pattern: List[str]
@@ -17,6 +67,17 @@ class Scanner(BaseConfig):
     minimum_size: ByteSize
     skip_nfo_dir: bool
     manual: bool
+    auto_confirm: bool = True  # Auto-confirm movie IDs without user interaction
+
+    @field_validator('input_directory', mode='before')
+    @classmethod
+    def convert_input_directory(cls, v):
+        """Convert string to Path for environment variable support"""
+        if v is None or v == '' or v == 'null':
+            return None
+        if isinstance(v, str):
+            return Path(v)
+        return v
 
 class CrawlerID(str, Enum):
     airav = 'airav'
@@ -172,57 +233,65 @@ class Summarizer(BaseConfig):
     fanart: FanartSummarize
     extra_fanarts: ExtraFanartSummarize
 
-class BaiduTranslateEngine(BaseConfig):
-    name: Literal['baidu']
-    app_id: str
-    api_key: str
-
-class BingTranslateEngine(BaseConfig):
-    name: Literal['bing']
-    api_key: str
-
-class ClaudeTranslateEngine(BaseConfig):
-    name: Literal['claude']
-    api_key: str
-
-class OpenAITranslateEngine(BaseConfig):
-    name: Literal['openai']
-    url: Url
+# OpenAI-compatible provider for prioritized list
+class OpenAICompatibleProvider(BaseConfig):
+    """OpenAI-compatible translation provider (supports OpenAI, Gemini, etc.)"""
+    base_url: str
     api_key: str
     model: str
-
-class GoogleTranslateEngine(BaseConfig):
-    name: Literal['google']
-
-TranslateEngine: TypeAlias = Union[
-        BaiduTranslateEngine,
-        BingTranslateEngine,
-        ClaudeTranslateEngine,
-        OpenAITranslateEngine,
-        GoogleTranslateEngine,
-        None]
+    name: str = "openai-compatible"  # Optional friendly name for logging
 
 class TranslateField(BaseConfig):
     title: bool
     plot: bool
 
 class Translator(BaseConfig):
-    engine: TranslateEngine = Field(..., discriminator='name')
+    # Prioritized list of OpenAI-compatible providers
+    # Falls back to Google Translate if all providers fail
+    providers: List[OpenAICompatibleProvider] = []
     fields: TranslateField
+    # Target language for translation (e.g., 'zh_CN' for Simplified Chinese, 'zh_TW' for Traditional Chinese, 'en' for English)
+    target_language: str = 'zh_CN'
+    # Whether title translation is mandatory (if all providers fail for title, skip the movie)
+    title_mandatory: bool = True
+    # Auto-detect if text is already in target language and skip translation
+    auto_detect_language: bool = True
 
 class Other(BaseConfig):
     interactive: bool
     check_update: bool
     auto_update: bool
 
+_temp_config_file = None  # Global to track temp file for cleanup
+
 def get_config_source():
+    global _temp_config_file
+
+    # Load environment variables from .env file BEFORE setting up config sources
+    try:
+        from dotenv import load_dotenv, find_dotenv
+        # Find and load .env file from current directory or parent directories
+        dotenv_path = find_dotenv(usecwd=True)
+        if dotenv_path:
+            load_dotenv(dotenv_path, override=False)
+        else:
+            # Fallback: try loading from current directory
+            load_dotenv(override=False)
+    except Exception:
+        pass  # dotenv is optional
+
     parser = ArgumentParser(prog='JavSP', description='汇总多站点数据的AV元数据刮削器', formatter_class=RawTextHelpFormatter)
     parser.add_argument('-c', '--config', help='使用指定的配置文件')
     args, _ = parser.parse_known_args()
     sources = []
     if args.config is None:
         args.config = resource_path('config.yml')
-    sources.append(FileSource(file=args.config))
+
+    # Create a temporary config file with environment variables substituted
+    _temp_config_file = create_env_substituted_config(args.config)
+
+    # Use the temporary file
+    sources.append(FileSource(file=_temp_config_file))
     sources.append(EnvSource(prefix='JAVSP_', allow_all=True))
     sources.append(CLArgSource(prefix='o'))
     return sources
@@ -235,3 +304,18 @@ class Cfg(BaseConfig):
     translator: Translator
     other: Other
     CONFIG_SOURCES=get_config_source()
+
+
+def cleanup_temp_config():
+    """清理临时配置文件"""
+    global _temp_config_file
+    if _temp_config_file and os.path.exists(_temp_config_file):
+        try:
+            os.unlink(_temp_config_file)
+        except:
+            pass
+
+
+# Register cleanup function to run on exit
+import atexit
+atexit.register(cleanup_temp_config)
