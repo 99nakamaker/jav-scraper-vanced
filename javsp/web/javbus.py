@@ -35,7 +35,10 @@ def parse_data(movie: MovieInfo):
     if page_title and page_title[0].startswith('404 Page Not Found!'):
         raise MovieNotFoundError(__name__, movie.dvdid)
 
-    container = html.xpath("//div[@class='container']")[0]
+    container_list = html.xpath("//div[@class='container']")
+    if not container_list:
+        raise MovieNotFoundError(__name__, movie.dvdid)
+    container = container_list[0]
     title = container.xpath("h3/text()")[0]
     cover = container.xpath("//a[@class='bigImage']/img/@src")[0]
     preview_pics = container.xpath("//div[@id='sample-waterfall']/a/@href")
