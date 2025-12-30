@@ -143,14 +143,39 @@ summarizer:
 
   extra_fanarts:
     # 是否下载剧照？
-    enabled: true
+    enabled: false
     # 间隔的两次封面爬取请求之间应该间隔多久
     scrap_interval: PT1.5S
 
 ################################
 translator:
-  # 翻译引擎，可选: google, bing, baidu, claude(haiku), openai （Google可以直接免费使用。留空表示禁用翻译功能）
-  # 进阶功能的文档 https://github.com/Yuukiy/JavSP/wiki/Translation-%7C-%E7%BF%BB%E8%AF%91
+  # ============================================
+  # 新配置方式：使用 providers 列表（推荐）
+  # ============================================
+  # 配置多个 OpenAI 兼容的翻译服务，按优先级顺序尝试
+  # 支持 OpenAI、Gemini (通过 OpenAI SDK)、以及其他兼容服务
+  #
+  # 重要：API Key 应该存储在 .env 文件中，不要直接写在这里！
+  # 1. 复制 .env.example 到 .env
+  # 2. 在 .env 中设置你的 API keys
+  # 3. 在这里使用 ${VARIABLE_NAME} 引用环境变量
+  providers:
+    # 第一优先级：ModelScope (OpenAI-compatible)
+    - base_url: 'https://api-inference.modelscope.cn/v1'
+      api_key: '${MODELSCOPE_API_KEY}'  # 从 .env 文件读取
+      model: 'LLM-Research/Llama-4-Scout-17B-16E-Instruct'
+      name: 'ModelScope'
+    # 第二优先级：Gemini Pro 2.5 (通过 OpenAI SDK)
+    - base_url: 'https://generativelanguage.googleapis.com/v1beta/openai/'
+      api_key: '${GEMINI_API_KEY}'  # 从 .env 文件读取
+      model: 'gemini-2.5-flash'
+      name: 'Gemini'
+
+  # ============================================
+  # 旧配置方式：单个引擎（已弃用，但仍支持）
+  # ============================================
+  # 如果 providers 为空，将使用此配置
+  # 翻译引擎，可选: google, bing, baidu, claude(haiku), openai
   engine: null
   ## 使用百度翻译: {{{
   # engine: 
@@ -171,6 +196,10 @@ translator:
   #   # Claude的密钥 (使用haiku模型)
   #   api_key: ''
   ## }}}
+  ## 使用Google翻译: {{{
+  # engine:
+  #   name: google
+  ## }}}
   ## 使用OpenAI翻译: {{{
   # engine: 
   #   name: openai
@@ -187,12 +216,21 @@ translator:
     title: true
     # 是否翻译剧情简介
     plot: true
+
+  # 目标语言 (zh_CN=简体中文, zh_TW=繁体中文, en=英语)
+  target_language: 'zh_CN'
+
+  # 标题翻译是否为必需项（如果所有翻译服务都失败，是否跳过该影片）
+  title_mandatory: true
+
+  # 自动检测语言（如果标题/简介已经是目标语言，则跳过翻译）
+  auto_detect_language: true
   
 ################################
 other:
   # 是否在stdin/stdout进行交互
   interactive: true
   # 是否允许检查更新。如果允许，在有新版本时会显示提示信息和新版功能
-  check_update: true
+  check_update: false
   # 是否允许检查到新版本时自动下载
-  auto_update: true
+  auto_update: false
