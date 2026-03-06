@@ -43,7 +43,7 @@ from javsp.image import *
 from javsp.datatype import Movie, MovieInfo
 from javsp.web.base import download
 from javsp.web.exceptions import *
-from javsp.web.translate import translate_movie_info
+from javsp.web.translate import translate_movie_info, test_translation_providers
 
 from javsp.config import Cfg, CrawlerID
 from javsp.prompt import prompt
@@ -366,6 +366,20 @@ def generate_names(movie: Movie):
 def reviewMovieID(all_movies, root):
     """人工检查每一部影片的番号"""
     count = len(all_movies)
+    auto_confirm = Cfg().scanner.auto_confirm
+
+    if auto_confirm:
+        # Auto-confirm mode: just print the movie IDs without prompting
+        logger.info(f'自动确认模式: 共 {count} 部影片')
+        for i, movie in enumerate(all_movies, start=1):
+            id = repr(movie)[7:-2]
+            relpaths = [os.path.relpath(i, root) for i in movie.files]
+            print(f'[{i}/{count}]\t{Fore.LIGHTMAGENTA_EX}{id}{Style.RESET_ALL}, 对应文件:')
+            print('\n'.join(['  '+i for i in relpaths]))
+        print()  # Empty line for visual separation
+        return
+
+    # Manual mode: prompt for each movie
     logger.info('进入手动模式检查番号: ')
     for i, movie in enumerate(all_movies, start=1):
         id = repr(movie)[7:-2]
@@ -432,7 +446,9 @@ def RunNormalMode(all_movies):
 
     outer_bar = tqdm(all_movies, desc='整理影片', ascii=True, leave=False)
     total_step = 6
-    if Cfg().translator.engine:
+    # Check if translation is enabled
+    translation_enabled = bool(Cfg().translator.providers) or Cfg().translator.fields.title or Cfg().translator.fields.plot
+    if translation_enabled:
         total_step += 1
     if Cfg().summarizer.extra_fanarts.enabled:
         total_step += 1
@@ -440,6 +456,12 @@ def RunNormalMode(all_movies):
     return_movies = []
     for movie in outer_bar:
         try:
+            # Print movie ID at the start of processing
+            movie_id = repr(movie)[7:-2]
+            print(f"\n{'='*60}")
+            print(f"正在处理: {Fore.LIGHTMAGENTA_EX}{movie_id}{Style.RESET_ALL}")
+            print(f"{'='*60}")
+
             # 初始化本次循环要整理影片任务
             filenames = [os.path.split(i)[1] for i in movie.files]
             logger.info('正在整理: ' + ', '.join(filenames))
@@ -454,7 +476,8 @@ def RunNormalMode(all_movies):
             has_required_keys = info_summary(movie, all_info)
             check_step(has_required_keys)
 
-            if Cfg().translator.engine:
+            # Check if translation is enabled
+            if translation_enabled:
                 inner_bar.set_description('翻译影片信息')
                 success = translate_movie_info(movie.info)
                 check_step(success)
@@ -523,9 +546,9 @@ def RunNormalMode(all_movies):
             if movie != all_movies[-1] and Cfg().crawler.sleep_after_scraping > Duration(0):
                 time.sleep(Cfg().crawler.sleep_after_scraping.total_seconds())
             return_movies.append(movie)
-        # except Exception as e:
-        #     logger.debug(e, exc_info=True)
-        #     logger.error(f'整理失败: {e}')
+        except Exception as e:
+            logger.debug(e, exc_info=True)
+            logger.error(f'整理失败: {e}')
         finally:
             inner_bar.close()
     return return_movies
@@ -603,6 +626,17 @@ def entry():
     version_info = 'JavSP ' + getattr(sys, 'javsp_version', '未知版本/从代码运行')
     logger.debug(version_info.center(60, '='))
     check_update(Cfg().other.check_update, Cfg().other.auto_update)
+
+    # Dry-run: test translation providers if configured
+    if Cfg().translator.providers or Cfg().translator.fields.title or Cfg().translator.fields.plot:
+        logger.info("测试翻译服务配置...")
+        test_results = test_translation_providers()
+        success_count = sum(1 for r in test_results if r['status'] == 'success')
+        if success_count == 0:
+            logger.warning("⚠️  所有翻译服务测试失败，将使用 Google 翻译作为后备")
+        else:
+            logger.info(f"✓ 翻译服务测试完成: {success_count}/{len(test_results)} 个服务可用")
+
     root = get_scan_dir(Cfg().scanner.input_directory)
     error_exit(root, '未选择要扫描的文件夹')
     # 导入抓取器，必须在chdir之前
@@ -615,6 +649,10 @@ def entry():
     recognize_fail = []
     error_exit(movie_count, '未找到影片文件')
     logger.info(f'扫描影片文件：共找到 {movie_count} 部影片')
+
+    # Sort movies by ID before processing
+    recognized.sort(key=lambda m: repr(m)[7:-2])
+
     if Cfg().scanner.manual:
         reviewMovieID(recognized, root)
     RunNormalMode(recognized + recognize_fail)

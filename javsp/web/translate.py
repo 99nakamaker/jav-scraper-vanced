@@ -1,7 +1,8 @@
 """网页翻译接口"""
 # 由于翻译服务不走代理，而且需要自己的错误处理机制，因此不通过base.py来管理网络请求
 import time
-from typing import Union
+import os
+from typing import Union, List
 import uuid
 import random
 import logging
@@ -10,167 +11,313 @@ import requests
 from hashlib import md5
 
 
-__all__ = ['translate', 'translate_movie_info']
+__all__ = ['translate', 'translate_movie_info', 'test_translation_providers']
 
 
-from javsp.config import BaiduTranslateEngine, BingTranslateEngine, Cfg, ClaudeTranslateEngine, GoogleTranslateEngine, OpenAITranslateEngine, TranslateEngine
+from javsp.config import Cfg, OpenAICompatibleProvider
 from javsp.datatype import MovieInfo
 from javsp.web.base import read_proxy
+from javsp.func import is_chinese, is_japanese
 
 
 logger = logging.getLogger(__name__)
 
 
-def translate_movie_info(info: MovieInfo):
-    """根据配置翻译影片信息"""
-    # 翻译标题
-    if info.title and Cfg().translator.fields.title and info.ori_title is None:
-        result = translate(info.title, Cfg().translator.engine, info.actress)
-        if 'trans' in result:
-            info.ori_title = info.title
-            info.title = result['trans']
-            # 如果有的话，附加断句信息
-            if 'orig_break' in result:
-                setattr(info, 'ori_title_break', result['orig_break'])
-            if 'trans_break' in result:
-                setattr(info, 'title_break', result['trans_break'])
-        else:
-            logger.error('翻译标题时出错: ' + result['error'])
-            return False
-    # 翻译简介
-    if info.plot and Cfg().translator.fields.plot:
-        result = translate(info.plot, Cfg().translator.engine, info.actress)
-        if 'trans' in result:
-            # 只有翻译过plot的影片才可能需要ori_plot属性，因此在运行时动态添加，而不添加到类型定义里
-            setattr(info, 'ori_plot', info.plot)
-            info.plot = result['trans']
-        else:
-            logger.error('翻译简介时出错: ' + result['error'])
-            return False
-    return True
-
-def translate(texts, engine: Union[
-        BaiduTranslateEngine,
-        BingTranslateEngine,
-        ClaudeTranslateEngine,
-        OpenAITranslateEngine,
-        None
-    ], actress=[]):
+def should_skip_translation(text: str, target_lang: str) -> bool:
     """
-    翻译入口：对错误进行处理并且统一返回格式
+    检测文本是否已经是目标语言，如果是则跳过翻译
+
+    Args:
+        text: 要检测的文本
+        target_lang: 目标语言代码 (e.g., 'zh_CN', 'zh_TW', 'en')
 
     Returns:
-        dict: 翻译正常: {'trans': '译文', 'orig_break':['原句1', ...], 'trans_break': ['译句1', ...]}
-              仅在能判断分句时有breaks字段，子句末尾可能有换行符\n
-              翻译出错: {'error': 'baidu: 54000: PARAM_FROM_TO_OR_Q_EMPTY'}
+        True if translation should be skipped, False otherwise
     """
-    rtn = {}
-    err_msg = ''
-    if engine.name == 'baidu':
-        result = baidu_translate(texts, engine.app_id, engine.api_key)
-        if 'error_code' not in result:
-            # 百度翻译的结果中的组表示的是按换行符分隔的不同段落，而不是句子
-            paragraphs = [i['dst'] for i in result['trans_result']]
-            rtn = {'trans': '\n'.join(paragraphs)}
+    if not text or len(text.strip()) == 0:
+        return True
+
+    # For Chinese target languages
+    if target_lang.startswith('zh'):
+        # If text is already Chinese and not Japanese, skip translation
+        if is_chinese(text) and not is_japanese(text):
+            return True
+
+    return False
+
+
+def translate_movie_info(info: MovieInfo):
+    """根据配置翻译影片信息"""
+    target_lang = Cfg().translator.target_language
+    auto_detect = Cfg().translator.auto_detect_language
+
+    # Print a clear separator for translation section
+    print()  # Empty line for visual separation
+
+    # 翻译标题
+    if info.title and Cfg().translator.fields.title and info.ori_title is None:
+        # Auto-detect if title is already in target language
+        if auto_detect and should_skip_translation(info.title, target_lang):
+            print(f"  ⊙ 标题已是{target_lang}，跳过翻译")
+            print(f"     原文: {info.title}")
         else:
-            err_msg = "{}: {}: {}".format(engine, result['error_code'], result['error_msg'])
-    elif engine.name == 'bing':
-        # 使用动态词典保护原文中的女优名，防止翻译后认不出来
-        for i in actress:
-            texts = texts.replace(i, f'<mstrans:dictionary translation="{i}">{i}</mstrans:dictionary>')
-        result = bing_translate(texts, api_key=engine.api_key)
-        if 'error' not in result:
-            sentLen = result[0]['translations'][0]['sentLen']
-            orig_break, trans_break = [], []
-            # 对原文进行断句
-            remaining = texts
-            for i in sentLen['srcSentLen']:
-                orig_break.append(remaining[:i])
-                remaining = remaining[i:]
-            # 对译文进行断句
-            remaining = result[0]['translations'][0]['text']
-            for i in sentLen['transSentLen']:
-                # Bing会在译文的每个句尾添加一个空格，这并不符合中文的标点习惯，所以去掉这个空格
-                trans_break.append(remaining[:i].rstrip(' '))
-                remaining = remaining[i:]
-            trans = ''.join(trans_break)
-            rtn = {'trans': trans, 'orig_break': orig_break, 'trans_break': trans_break}
+            # Show original text
+            print(f"  → 原标题: {info.title}")
+            result = translate_with_providers(info.title, info.actress, field_name='标题', target_lang=target_lang)
+            if 'trans' in result:
+                info.ori_title = info.title
+                info.title = result['trans']
+                # 如果有的话，附加断句信息
+                if 'orig_break' in result:
+                    setattr(info, 'ori_title_break', result['orig_break'])
+                if 'trans_break' in result:
+                    setattr(info, 'title_break', result['trans_break'])
+                # Show translated title with provider
+                provider_name = result.get('provider', 'unknown')
+                print(f"  ✓ 译标题: {info.title} ({provider_name})")
+            else:
+                error_msg = result.get('error', 'Unknown error')
+                print(f"  ✗ 标题翻译失败: {error_msg}")
+                # Title is mandatory by default - but don't crash, just warn
+                if Cfg().translator.title_mandatory:
+                    logger.warning(f"标题翻译失败但继续处理: {error_msg}")
+
+    # 翻译简介
+    if info.plot and Cfg().translator.fields.plot:
+        # Auto-detect if plot is already in target language
+        if auto_detect and should_skip_translation(info.plot, target_lang):
+            print(f"  ⊙ 简介已是{target_lang}，跳过翻译")
+            plot_preview = info.plot[:60] + '...' if len(info.plot) > 60 else info.plot
+            print(f"     原文: {plot_preview}")
         else:
-            err_msg = "{}: {}: {}".format(engine, result['error']['code'], result['error']['message'])
-    elif engine.name == 'claude':
-        try:
-            result = claude_translate(texts, engine.api_key)
-            if 'error_code' not in result:
-                rtn = {'trans': result}
+            # Show original plot preview
+            plot_preview = info.plot[:60] + '...' if len(info.plot) > 60 else info.plot
+            print(f"  → 原简介: {plot_preview}")
+            result = translate_with_providers(info.plot, info.actress, field_name='简介', target_lang=target_lang)
+            if 'trans' in result:
+                # 只有翻译过plot的影片才可能需要ori_plot属性，因此在运行时动态添加，而不添加到类型定义里
+                setattr(info, 'ori_plot', info.plot)
+                info.plot = result['trans']
+                # Show preview of translated plot with provider
+                plot_preview = info.plot[:60] + '...' if len(info.plot) > 60 else info.plot
+                provider_name = result.get('provider', 'unknown')
+                print(f"  ✓ 译简介: {plot_preview} ({provider_name})")
             else:
-                err_msg = "{}: {}: {}".format(engine, result['error_code'], result['error_msg'])
-        except Exception as e:
-            err_msg = "{}: {}: Exception: {}".format(engine, -2, repr(e))
-    elif engine.name == 'openai':
-        try:
-            result = openai_translate(texts, engine.url, engine.api_key, engine.model)
-            if 'error_code' not in result:
-                rtn = {'trans': result}
-            else:
-                err_msg = "{}: {}: {}".format(engine, result['error_code'], result['error_msg'])
-        except Exception as e:
-            err_msg = "{}: {}: Exception: {}".format(engine, -2, repr(e))
-    elif engine.name == 'google':
-        try:
-            result = google_trans(texts)
-            # 经测试，翻译成功时会带有'sentences'字段；失败时不带，也没有故障码
-            if 'sentences' in result:
-                # Google会对句子分组，完整的译文需要自行拼接
-                orig_break = [i['orig'] for i in result['sentences']]
-                trans_break = [i['trans'] for i in result['sentences']]
-                trans = ''.join(trans_break)
-                rtn = {'trans': trans, 'orig_break': orig_break, 'trans_break': trans_break}
-            else:
-                err_msg = "{}: {}: {}".format(engine, result['error_code'], result['error_msg'])
-        except Exception as e:
-            err_msg = "{}: {}: Exception: {}".format(engine, -2, repr(e))
-    else:
-        return {'trans': texts}
+                error_msg = result.get('error', 'Unknown error')
+                print(f"  ⊙ 简介翻译失败，继续处理: {error_msg}")
 
-    if rtn == {}:
-        rtn['error'] = err_msg
-
-    return rtn
-
-def baidu_translate(texts, app_id, api_key, to='zh'):
-    """使用百度翻译文本（默认翻译为简体中文）"""
-    api_url = "https://api.fanyi.baidu.com/api/trans/vip/translate"
-    headers = {'Content-Type': 'application/x-www-form-urlencoded'}
-    salt = random.randint(0, 0x7FFFFFFF)
-    sign_input = app_id + texts + str(salt) + api_key
-    sign = md5(sign_input.encode('utf-8')).hexdigest()
-    payload = {'appid': app_id, 'q': texts, 'from': 'auto', 'to': to, 'salt': salt, 'sign': sign}
-    # 由于百度标准版限制QPS为1，连续翻译标题和简介会超限，因此需要添加延时
-    now = time.perf_counter()
-    last_access = getattr(baidu_translate, '_last_access', -1)
-    wait = 1.0 - (now - last_access)
-    if wait > 0:
-        time.sleep(wait)
-    r = requests.post(api_url, params=payload, headers=headers)
-    result = r.json()
-    baidu_translate._last_access = time.perf_counter()
-    return result
+    return True
 
 
-def bing_translate(texts, api_key, to='zh-Hans'):
-    """使用Bing翻译文本（默认翻译为简体中文）"""
-    api_url = "https://api.cognitive.microsofttranslator.com/translate"
-    params = {'api-version': '3.0', 'to': to, 'includeSentenceLength': True}
-    headers = {
-        'Ocp-Apim-Subscription-Key': api_key,
-        'Ocp-Apim-Subscription-Region': 'global',
-        'Content-type': 'application/json',
-        'X-ClientTraceId': str(uuid.uuid4())
+
+def translate_with_openai_compatible(texts: str, provider: OpenAICompatibleProvider, actress=None, target_lang='zh_CN') -> dict:
+    """
+    使用 OpenAI-compatible API 翻译文本
+    支持 OpenAI、Gemini (via OpenAI SDK)、以及其他兼容 OpenAI 格式的服务
+
+    Args:
+        texts: 要翻译的文本
+        provider: OpenAI兼容的服务提供商配置
+        actress: 女优名列表（用于保护不被翻译）
+        target_lang: 目标语言代码 (e.g., 'zh_CN', 'zh_TW', 'en')
+
+    Returns:
+        dict: 成功: {'trans': '译文'}, 失败: {'error_code': int, 'error_msg': str}
+    """
+    try:
+        from openai import OpenAI
+    except ImportError:
+        return {"error_code": -10, "error_msg": "openai package not installed"}
+
+    # Handle None actress parameter
+    if actress is None:
+        actress = []
+
+    # Map language codes to human-readable names
+    lang_map = {
+        'zh_CN': 'simplified Chinese',
+        'zh_TW': 'traditional Chinese',
+        'zh-Hans': 'simplified Chinese',
+        'zh-Hant': 'traditional Chinese',
+        'en': 'English',
+        'ja': 'Japanese',
+        'ko': 'Korean',
     }
-    body = [{'text': texts}]
-    r = requests.post(api_url, params=params, headers=headers, json=body)
-    result = r.json()
-    return result
+    target_lang_name = lang_map.get(target_lang, target_lang)
+
+    try:
+        client = OpenAI(
+            api_key=provider.api_key,
+            base_url=provider.base_url
+        )
+
+        # Protect actress names in the text
+        protected_text = texts
+        for name in actress:
+            # Simple protection - could be enhanced
+            protected_text = protected_text.replace(name, f"[ACTRESS:{name}]")
+
+        response = client.chat.completions.create(
+            model=provider.model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": f"Translate the following Japanese paragraph into {target_lang_name} ({target_lang}), while leaving non-Japanese text, names, or text that does not look like Japanese untranslated. Reply with the translated text only, do not add any text that is not in the original content."
+                },
+                {
+                    "role": "user",
+                    "content": protected_text
+                }
+            ],
+            temperature=0,
+            max_tokens=1024,
+        )
+
+        # Check if response has content
+        if not response.choices or not response.choices[0].message.content:
+            return {"error_code": -12, "error_msg": "Empty response from API"}
+
+        translated = response.choices[0].message.content.strip()
+
+        # Restore actress names
+        for name in actress:
+            translated = translated.replace(f"[ACTRESS:{name}]", name)
+
+        return {"trans": translated}
+    except Exception as e:
+        return {"error_code": -11, "error_msg": repr(e)}
+
+
+def translate_with_providers(texts: str, actress=None, field_name='', target_lang='zh_CN') -> dict:
+    """
+    使用配置的 providers 列表按优先级顺序尝试翻译
+    所有 providers 失败后自动回退到 Google 翻译
+
+    Args:
+        texts: 要翻译的文本
+        actress: 女优名列表
+        field_name: 字段名称（用于日志）
+        target_lang: 目标语言代码
+
+    Returns:
+        dict: 成功: {'trans': '译文', 'provider': 'provider_name'}, 失败: {'error': 'error_msg'}
+    """
+    # Handle None actress parameter
+    if actress is None:
+        actress = []
+
+    providers = Cfg().translator.providers
+
+    # Try all configured providers first
+    if providers:
+        errors = []
+        for idx, provider in enumerate(providers):
+            provider_name = provider.name or f"{provider.model}"
+            # Show which provider we're trying (visible to user)
+            print(f"     [{idx+1}/{len(providers)}] 尝试 {provider_name}...", end='', flush=True)
+
+            result = translate_with_openai_compatible(texts, provider, actress, target_lang)
+
+            if 'trans' in result:
+                result['provider'] = provider_name
+                print(f" ✓")  # Success indicator on same line
+                return result
+            else:
+                error_msg = result.get('error_msg', 'Unknown error')
+                # Show short error on same line
+                short_error = error_msg[:50] + '...' if len(error_msg) > 50 else error_msg
+                print(f" ✗ {short_error}")
+                errors.append(f"{provider_name}: {error_msg}")
+
+        # All providers failed, log errors
+        logger.warning(f"所有 OpenAI 兼容服务均失败: {'; '.join(errors)}")
+
+    # Fallback to Google Translate
+    print(f"     [fallback] 尝试 Google 翻译...", end='', flush=True)
+    try:
+        result = google_trans(texts, to=target_lang)
+        # 经测试，翻译成功时会带有'sentences'字段；失败时不带，也没有故障码
+        if 'sentences' in result:
+            # Google会对句子分组，完整的译文需要自行拼接
+            orig_break = [i['orig'] for i in result['sentences']]
+            trans_break = [i['trans'] for i in result['sentences']]
+            trans = ''.join(trans_break)
+            print(f" ✓")
+            return {'trans': trans, 'orig_break': orig_break, 'trans_break': trans_break, 'provider': 'Google'}
+        else:
+            error_msg = f"{result.get('error_code', 'unknown')}: {result.get('error_msg', 'unknown error')}"
+            print(f" ✗ {error_msg}")
+            return {'error': error_msg}
+    except Exception as e:
+        error_msg = repr(e)
+        print(f" ✗ {error_msg}")
+        return {'error': f"Google: {error_msg}"}
+
+
+def test_translation_providers() -> List[dict]:
+    """
+    测试所有配置的翻译服务提供商
+    用于启动时的 dry-run 检查
+
+    Returns:
+        List[dict]: 每个 provider 的测试结果
+    """
+    test_text = "こんにちは"
+    target_lang = Cfg().translator.target_language
+    results = []
+
+    providers = Cfg().translator.providers
+    if providers:
+        for idx, provider in enumerate(providers):
+            provider_name = provider.name or f"{provider.model}@{provider.base_url}"
+            logger.info(f"测试翻译服务 [{idx+1}/{len(providers)}]: {provider_name}")
+
+            result = translate_with_openai_compatible(test_text, provider, [], target_lang)
+
+            if 'trans' in result:
+                results.append({
+                    'provider': provider_name,
+                    'status': 'success',
+                    'translation': result['trans']
+                })
+                logger.info(f"✓ {provider_name} 测试成功: {test_text} → {result['trans']}")
+            else:
+                results.append({
+                    'provider': provider_name,
+                    'status': 'failed',
+                    'error': f"{result.get('error_code')}: {result.get('error_msg')}"
+                })
+                logger.warning(f"✗ {provider_name} 测试失败: {result.get('error_msg')}")
+    
+    # Always test Google Translate as fallback
+    logger.info("测试 Google 翻译 (fallback)")
+    try:
+        result = google_trans(test_text, to=target_lang)
+        if 'sentences' in result:
+            trans = ''.join([i['trans'] for i in result['sentences']])
+            results.append({
+                'provider': 'Google',
+                'status': 'success',
+                'translation': trans
+            })
+            logger.info(f"✓ Google 测试成功: {test_text} → {trans}")
+        else:
+            results.append({
+                'provider': 'Google',
+                'status': 'failed',
+                'error': 'No sentences in response'
+            })
+            logger.warning("✗ Google 测试失败")
+    except Exception as e:
+        results.append({
+            'provider': 'Google',
+            'status': 'failed',
+            'error': repr(e)
+        })
+        logger.warning(f"✗ Google 测试失败: {repr(e)}")
+
+    return results
+
 
 
 _google_trans_wait = 60
@@ -195,64 +342,4 @@ def google_trans(texts, to='zh_CN'):
     time.sleep(4) # Google翻译的API有QPS限制，因此需要等待一段时间
     return result
 
-def claude_translate(texts, api_key, to="zh_CN"):
-    """使用Claude翻译文本（默认翻译为简体中文）"""
-    api_url = "https://api.anthropic.com/v1/messages"
-    headers = {
-        "x-api-key": api_key,
-        "context-type": "application/json",
-        "anthropic-version": "2023-06-01",
-    }
-    data = {
-        "model": "claude-3-haiku-20240307",
-        "system": f"Translate the following Japanese paragraph into {to}, while leaving non-Japanese text, names, or text that does not look like Japanese untranslated. Reply with the translated text only, do not add any text that is not in the original content.",
-        "max_tokens": 1024,
-        "messages": [{"role": "user", "content": texts}],
-    }
-    r = requests.post(api_url, headers=headers, json=data)
-    if r.status_code == 200:
-        result = r.json().get("content", [{}])[0].get("text", "").strip()
-    else:
-        result = {
-            "error_code": r.status_code,
-            "error_msg": r.json().get("error", {}).get("message", r.reason),
-        }
-    return result
 
-def openai_translate(texts, url: Url, api_key: str, model: str, to="zh_CN"):
-    """使用 OpenAI 翻译文本（默认翻译为简体中文）"""
-    api_url = str(url)
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}",
-    }
-    data = {
-         "messages": [
-           {
-             "role": "system",
-             "content": f"Translate the following Japanese paragraph into {to}, while leaving non-Japanese text, names, or text that does not look like Japanese untranslated. Reply with the translated text only, do not add any text that is not in the original content."
-           },
-           {
-             "role": "user",
-             "content": texts
-           }
-         ],
-         "model": model,
-         "temperature": 0,
-         "max_tokens": 1024,
-    }
-    r = requests.post(api_url, headers=headers, json=data)
-    if r.status_code == 200:
-        if 'error' in r.json():
-            result = {
-                "error_code": r.status_code,
-                "error_msg": r.json().get("error", {}).get("message", ""),
-            }
-        else:
-            result = r.json().get("choices", [{}])[0].get("message", {}).get("content", "").strip()
-    else:
-        result = {
-            "error_code": r.status_code,
-            "error_msg": r.reason,
-        }
-    return result

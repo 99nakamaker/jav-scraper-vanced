@@ -1,0 +1,339 @@
+# JavSP Development Guidelines
+
+## Project Overview
+
+JavSP is a Python-based AV (adult video) metadata scraper and organizer that:
+- Scrapes metadata from multiple Japanese AV websites
+- Translates Japanese titles and descriptions to other languages
+- Organizes video files with proper naming and metadata (NFO files)
+- Downloads cover images and fanart
+- Supports Kodi/Emby/Jellyfin media servers
+
+## Code Style & Principles
+
+### 1. Simplicity First
+- Keep code simple and readable
+- Avoid over-engineering or excessive abstraction
+- Prefer straightforward solutions over clever ones
+- Minimize logging verbosity - only log what's essential
+
+### 2. Logging Guidelines
+- **User-facing output (print)**: For important information users need to see
+  - Use visual indicators: ✓ (success), ✗ (failure), ⊙ (skip/info), → (processing)
+  - Show original and translated text for transparency
+  - Show provider name for successful translations
+  - Show provider attempts and errors inline
+  - Example: `print(f"  → 原标题: {info.title}")`
+  - Example: `print(f"  ✓ 译标题: {info.title} ({provider_name})")`
+  - Example: `print(f"     [1/2] 尝试 ModelScope... ✓")`
+  - Example: `print(f"     [2/2] 尝试 Gemini... ✗ Empty response")`
+- **INFO**: For important state changes (logged to file/debug)
+- **WARNING**: For recoverable errors that don't stop processing
+- **ERROR**: For failures that prevent completion
+- **DEBUG**: For detailed diagnostic information (disabled by default)
+- Avoid redundant logging - don't log the same information multiple times
+- Keep user-facing output clean and informative
+
+### 3. Error Handling
+- Always check for None/empty values before calling methods
+- Handle None parameters gracefully (e.g., `actress=None` should default to `[]`)
+- Provide meaningful error messages
+- Use try-except blocks for external API calls
+- Make translation failures non-fatal when possible
+- Example:
+  ```python
+  # Handle None actress parameter
+  if actress is None:
+      actress = []
+
+  # Check API response
+  if not response.choices or not response.choices[0].message.content:
+      return {"error_code": -12, "error_msg": "Empty response from API"}
+  ```
+
+### 4. Configuration Management
+- Use `confz` library with `BaseConfig` for configuration
+- Support multiple configuration sources: YAML files, environment variables, CLI args
+- Environment variables use `JAVSP_` prefix
+- API keys must be in `.env` file, never in `config.yml`
+- Use `${VARIABLE_NAME}` syntax in YAML to reference environment variables
+- Custom environment variable substitution is implemented in `javsp/config.py`
+
+### 5. Translation System
+- Support multiple OpenAI-compatible providers with automatic fallback
+- Check both `Cfg().translator.providers` and `Cfg().translator.engine` for backward compatibility
+- Auto-detect language to skip unnecessary translations
+- Title translation is mandatory by default, plot translation is optional
+- Protect actress names from being translated
+- Keep translation functions simple and focused
+
+## Key Architecture Patterns
+
+### Translation Flow
+1. Check if translation is enabled: `Cfg().translator.providers or Cfg().translator.engine`
+2. Auto-detect if text is already in target language (optional)
+3. Try providers in priority order with automatic fallback
+4. Log only essential information (provider name, success/failure)
+5. Return structured result: `{'trans': '...', 'provider': '...'}` or `{'error': '...'}`
+
+### Configuration Loading
+1. Load `.env` file via `python-dotenv`
+2. Read `config.yml` and substitute `${VAR_NAME}` with environment variables
+3. Create temporary config file with substituted values
+4. Load config via `confz` with sources: FileSource → EnvSource → CLArgSource
+5. Clean up temporary file on exit
+
+### Movie Processing Pipeline
+1. Scan files → Extract AV IDs
+2. Parallel crawling → Fetch metadata from multiple sources
+3. Info summary → Merge and validate data
+4. **Translation** → Translate title and plot (if enabled)
+5. Generate paths → Apply naming rules
+6. Download images → Cover, fanart, extrafanart
+7. Write NFO → Kodi-compatible XML
+8. Move files → Organize into target folders
+
+## Common Pitfalls to Avoid
+
+### 1. Translation Not Running
+**Problem**: Code only checks `Cfg().translator.engine` but config uses `providers`
+**Solution**: Always check both:
+```python
+translation_enabled = Cfg().translator.providers or Cfg().translator.engine
+if translation_enabled:
+    # Run translation
+```
+
+### 2. NoneType Errors in API Responses
+**Problem**: Assuming API response always has content
+**Solution**: Always validate before accessing:
+```python
+if not response.choices or not response.choices[0].message.content:
+    return {"error_code": -12, "error_msg": "Empty response from API"}
+translated = response.choices[0].message.content.strip()
+```
+
+### 3. Excessive Logging
+**Problem**: Logging every step creates noise and slows down processing
+**Solution**: Only log important events:
+```python
+# Good - concise and informative
+print(f"  ✓ 标题: {info.title}")
+logger.debug(f"[标题] ✓ ModelScope")
+
+# Bad - too verbose
+logger.info(f"========== 开始翻译影片信息 ==========")
+logger.info(f"目标语言: zh_CN, 自动检测: True")
+logger.info(f"原始标题: {info.title}")
+logger.info(f"→ 开始翻译标题...")
+```
+
+### 4. Environment Variable Substitution
+**Problem**: `confz` doesn't natively support `${VAR_NAME}` in YAML
+**Solution**: Custom preprocessing in `javsp/config.py`:
+- `substitute_env_vars()` - Replace `${VAR_NAME}` with actual values
+- `create_env_substituted_config()` - Create temporary YAML with substitutions
+- `cleanup_temp_config()` - Clean up on exit
+
+## File Organization
+
+### Core Modules
+- `javsp/__main__.py` - Entry point and main processing loop
+- `javsp/config.py` - Configuration management with env var substitution
+- `javsp/web/translate.py` - Translation logic and API calls
+- `javsp/file.py` - File scanning and organization
+- `javsp/nfo.py` - NFO file generation
+- `javsp/func.py` - Utility functions (language detection, etc.)
+- `javsp/datatype.py` - Data models (Movie, MovieInfo, etc.)
+
+### Configuration Files
+- `config.yml` - Main configuration (uses `${VAR_NAME}` for secrets)
+- `.env` - API keys and secrets (never commit to git)
+- `.env.example` - Template for `.env` file
+
+### Documentation
+- `README.md` - Main project documentation
+- `CHANGELOG_v2.md` - Version 2 feature changelog
+- `TRANSLATION_LOGGING_IMPROVEMENTS.md` - Translation system documentation
+- `ENV_VAR_SUBSTITUTION_FIX.md` - Environment variable fix documentation
+
+## Testing Guidelines
+
+### Before Committing
+1. Run syntax check: `python -m py_compile <file>`
+2. Test with real data if possible
+3. Check that translation is triggered (look for translation step in progress bar)
+4. Verify NFO files are generated correctly
+5. Check logs for errors or warnings
+
+### Translation Testing
+```bash
+# Test translation providers at startup
+uv run javsp --config config.yml
+
+# Should see:
+# ✓ ModelScope 测试成功
+# ✓ Gemini 测试成功
+```
+
+## Dependencies
+
+### Core
+- `confz` - Configuration management
+- `python-dotenv` - Environment variable loading
+- `openai` - OpenAI SDK (used for all OpenAI-compatible APIs including Gemini)
+- `pydantic` - Data validation
+- `tqdm` - Progress bars
+- `lxml` - XML/HTML processing
+
+### Optional
+- Various web scraping libraries for different sources
+
+## Environment Variables
+
+### Required for Translation
+- `MODELSCOPE_API_KEY` - ModelScope API key
+- `GEMINI_API_KEY` - Google Gemini API key
+
+### Optional
+- `JAVSP_*` - Any config value can be overridden via environment variables with `JAVSP_` prefix
+
+## Best Practices Summary
+
+1. **Keep it simple** - Avoid over-engineering
+2. **Log minimally** - Only essential information
+3. **Handle errors gracefully** - Don't crash on API failures
+4. **Validate inputs** - Check for None/empty before using
+5. **Support backward compatibility** - Check both old and new config formats
+6. **Protect secrets** - API keys in `.env`, never in code or config.yml
+7. **Test thoroughly** - Verify changes with real data
+8. **Document changes** - Update relevant documentation files
+
+## Recent Changes (v2)
+
+### Translation System Refactor
+
+**Architecture:**
+- Switched from Google `genai` to OpenAI SDK for all providers
+- Support multiple OpenAI-compatible providers with automatic fallback
+- Fallback to Google Translate if all OpenAI providers fail
+- Configurable target language (default: Simplified Chinese)
+- Auto-detect language to skip unnecessary translations
+- Made plot translation optional (title is mandatory by default)
+
+**Configuration:**
+```yaml
+translator:
+  # New: Prioritized list of OpenAI-compatible providers
+  providers:
+    - name: ModelScope
+      base_url: https://api-inference.modelscope.cn/v1
+      api_key: ${MODELSCOPE_API_KEY}
+      model: Qwen/Qwen2.5-72B-Instruct
+    - name: Gemini
+      base_url: https://generativelanguage.googleapis.com/v1beta/openai/
+      api_key: ${GEMINI_API_KEY}
+      model: gemini-2.0-flash-exp
+
+  # Legacy: Single engine (fallback if all providers fail)
+  engine:
+    name: google
+
+  fields:
+    title: yes
+    plot: yes
+
+  target_language: zh_CN
+  title_mandatory: yes
+  auto_detect_language: yes
+```
+
+**Environment Variables (.env):**
+```bash
+# Translation API Keys
+MODELSCOPE_API_KEY=your_key_here
+GEMINI_API_KEY=your_key_here
+
+# Optional: Scanner configuration
+# IMPORTANT: Use DOT (.) not double underscore (__)!
+JAVSP_SCANNER.INPUT_DIRECTORY=/path/to/movies
+
+# Optional: Network proxy
+# JAVSP_NETWORK.PROXY_SERVER=http://127.0.0.1:1080
+```
+
+**Key Points:**
+- Use DOT (`.`) not double underscore (`__`) for nested config in environment variables
+- API keys must be in `.env` file, never in `config.yml`
+- Use `${VARIABLE_NAME}` syntax in YAML to reference environment variables
+- Custom environment variable substitution is implemented in `javsp/config.py`
+
+### Configuration Improvements
+
+1. **Environment Variable Support:**
+   - API keys moved to `.env` file
+   - Environment variable substitution in `config.yml` via `${VAR_NAME}`
+   - `.env` file loaded at module import time via `python-dotenv`
+   - Use DOT (`.`) for nested fields: `JAVSP_SCANNER.INPUT_DIRECTORY`
+
+2. **Scanner Configuration:**
+   - `auto_confirm: true` - Auto-confirm movie IDs without prompting
+   - `skip_nfo_dir: no` - Process folders even if they have NFO files
+   - `input_directory` - Can be set via environment variable
+
+3. **Extrafanart:**
+   - Download now configurable (default: disabled)
+
+### Code Simplification
+
+1. **Translation Functions:**
+   - Reduced translation code by 33% (167 lines → 111 lines)
+   - Simplified logging output by 85%
+   - Better error handling for API responses
+   - Fixed translation trigger to support both `providers` and `engine`
+
+2. **Logging Improvements:**
+   - Show original and translated text inline
+   - Show provider attempts with progress indicators
+   - Visual indicators: ✓ (success), ✗ (failure), ⊙ (skip), → (processing)
+   - Example output:
+     ```
+     正在处理: IPZZ-672
+     ============================================================
+
+       → 原标题: 大嫌いな絶倫クソ上司2人と温泉旅館でまさかの相部屋...
+          [1/2] 尝试 ModelScope... ✓
+       ✓ 译标题: 和最讨厌的两个绝伦垃圾上司在温泉旅馆竟然同房 (ModelScope)
+
+       → 原简介: 会社の温泉旅行で、大嫌いな上司2人と相部屋になってしまった...
+          [1/2] 尝试 ModelScope... ✗ Empty response from API
+          [2/2] 尝试 Gemini... ✓
+       ✓ 译简介: 在公司的温泉旅行中，和最讨厌的两个上司同房了... (Gemini)
+     ```
+
+3. **Processing Improvements:**
+   - Movies sorted by ID before processing
+   - Movie ID printed at start of each processing
+   - Translation failures don't crash the app (continues to next movie)
+
+### Bug Fixes
+
+1. **Environment Variable Loading:**
+   - Fixed `.env` file loading timing issue
+   - Moved `load_dotenv()` to `get_config_source()` for proper timing
+   - Added field validator for `input_directory` to convert string to Path
+
+2. **Translation API Errors:**
+   - Fixed `None` actress parameter causing `TypeError`
+   - Fixed empty API response handling
+   - Added proper error messages for all failure cases
+
+3. **Google Translate Fallback:**
+   - If all OpenAI providers fail, automatically fall back to `translator.engine`
+   - Supports Google Translate as free fallback option
+   - Shows fallback attempt in console output
+
+## Contact & Support
+
+For issues or questions, refer to the project's GitHub repository.
+
