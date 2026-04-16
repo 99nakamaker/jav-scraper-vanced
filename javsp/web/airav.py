@@ -17,7 +17,7 @@ request.timeout = 20
 
 
 logger = logging.getLogger(__name__)
-base_url = 'https://www.airav.wiki'
+base_url = 'https://www.airav.io'
 
 
 def search_movie(dvdid):

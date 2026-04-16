@@ -1,3 +1,9 @@
+# How to run
+
+```
+uv run javsp --config config.yml
+```
+
 ![JavSP](./image/JavSP.svg)
 
 # Jav Scraper Package
