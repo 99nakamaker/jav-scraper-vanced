@@ -1,3 +1,5 @@
+This repo is archived as of May 2026.
+
 ## Commands
 
 ### Dependency Management
